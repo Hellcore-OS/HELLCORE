@@ -1,0 +1,3 @@
+b5566f76ec0fe1e62e8ca995fa119124f5d7e03491899d044caac2f23cdfe55c  build/core09-integration/qemu-test-001/serial.log
+b87a12b46b79d067bac3c6c3c52ff6dc1c9e34993889e53ad9e1ed9d9e519fc8  build/core09-integration/qemu-test-001/esp/EFI/BOOT/BOOTX64.EFI
+57d38be2099dd4d52104c308a4962ce45680eb40bec1a066d4eca028d0d890bd  build/core09-integration/qemu-test-001/esp/EFI/BOOT/hellcore.elf

@@ -1,0 +1,30 @@
+# Compiled objects
+*.o
+*.obj
+
+# Generated firmware and disk images
+*.efi
+*.EFI
+*.fd
+*.iso
+*.bin
+*.img
+*.elf
+
+# Generated test executables
+tests/core09_pmm_*
+!tests/core09_pmm_*.c
+
+# Temporary files
+*.tmp
+*.log
+*.swp
+*~
+
+# Generated linker maps and UEFI variable state
+*.map
+NvVars
+
+# Generated host-test executables
+build/core09-integration/host-tests-hardened/
+build/core09-integration/merged-host-tests/

@@ -1,0 +1,22 @@
+KERNEL_BUILD = build/kernel
+
+.PHONY: all kernel clean
+
+all: kernel
+
+$(KERNEL_BUILD):
+	mkdir -p $(KERNEL_BUILD)
+
+$(KERNEL_BUILD)/kernel.o: kernel/kernel.c include/hellcore_boot_info.h | $(KERNEL_BUILD)
+	clang -target x86_64-unknown-none-elf -ffreestanding -fno-stack-protector -fno-pic -fno-pie -mno-red-zone -mcmodel=small -O2 -Wall -Wextra -Iinclude -c $< -o $@
+
+$(KERNEL_BUILD)/entry.o: kernel/entry.asm | $(KERNEL_BUILD)
+	nasm -f elf64 $< -o $@
+
+$(KERNEL_BUILD)/hellcore.elf: $(KERNEL_BUILD)/entry.o $(KERNEL_BUILD)/kernel.o
+	ld.lld -m elf_x86_64 -nostdlib -static --image-base=0x100000 -z max-page-size=0x1000 -e kernel_entry -Ttext=0x101000 -o $@ $^
+
+kernel: $(KERNEL_BUILD)/hellcore.elf
+
+clean:
+	rm -f $(KERNEL_BUILD)/*.o $(KERNEL_BUILD)/*.elf

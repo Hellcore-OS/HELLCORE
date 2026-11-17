@@ -1,0 +1,10 @@
+HELLCORE CORE 1.0 PRIVATE VMM V3
+Preserved source, object, ELF and QEMU test log
+
+cf1cc1bba371c2c1f82e9461b45ad84c125666fb96410878f149fa48c3fed201  build/core10-vmm/core10_private_vmm_v3.c
+d4cb7ee420d7746b6a133f1378482f96c5ae703cbeec1eaa44b973854fe35b1e  build/core10-vmm/core10_private_vmm_v3.h
+0bfae8c738b75feb3bba543154180b9e2a22a19abf6bd6f5864ca048b479bbf4  build/core10-vmm/private_vmm_v3.o
+ebbe5911437f2875fae115b444457ddd7c9a90cd01ba71fdd20b2ddee21ab415  build/core10-vmm/core10_kernel_private_vmm.c
+f57fc4b46cab79e9d1ccef2c578090cfb6d38c11a8778cd15af9748937a9ce11  build/core10-vmm/kernel_private_vmm.o
+8e18835e53717b8c94a26aa6b6d76a67233d0db243031add6d95533e00254c5c  build/core10-vmm/hellcore-core10-private-vmm.elf
+a7acf8ef2631b0559ed398d9f87a4d6f832192d88a1481cb8c497dadd84b2ef2  build/core10-vmm/milestones/CORE10_PRIVATE_VMM_V3_PASS.log

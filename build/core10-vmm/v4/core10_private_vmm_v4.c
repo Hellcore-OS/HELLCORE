@@ -1,0 +1,673 @@
+#include <stdint.h>
+#include "pmm.h"
+#include "core10_private_vmm_v4.h"
+
+#define PAGE_SIZE 4096ULL
+#define MAX_OWNED 768U
+
+/* Audited inherited page-table ranges from the CORE 1.0 QEMU run.
+   These ranges are read-only identity mappings in that test profile. */
+#define BOOT_TABLE_RANGE_0_START 0x1F800000ULL
+#define BOOT_TABLE_RANGE_0_END   0x1FA00000ULL
+#define BOOT_TABLE_RANGE_1_START 0x1FA00000ULL
+#define BOOT_TABLE_RANGE_1_END   0x1FC00000ULL
+
+#define P  (1ULL << 0)
+#define W  (1ULL << 1)
+#define U  (1ULL << 2)
+#define PS (1ULL << 7)
+#define NX (1ULL << 63)
+
+#define CR4_LA57 (1ULL << 12)
+#define EFER_MSR 0xC0000080U
+#define EFER_NXE (1ULL << 11)
+
+static uint64_t root;
+static uint64_t address_mask;
+static uint8_t reserved[512];
+static uint64_t owned[MAX_OWNED];
+static uint32_t owned_count;
+static uint32_t reserved_count;
+static uint32_t created_count;
+static uint32_t removed_count;
+static uint32_t rollback_count;
+static uint32_t ownership_errors;
+static int32_t fail_after = -1;
+static int ready;
+
+static uint64_t cr3_read(void)
+{
+    uint64_t value;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(value));
+    return value;
+}
+
+static uint64_t cr4_read(void)
+{
+    uint64_t value;
+    __asm__ volatile ("mov %%cr4, %0" : "=r"(value));
+    return value;
+}
+
+static uint64_t msr_read(uint32_t msr)
+{
+    uint32_t low, high;
+    __asm__ volatile (
+        "rdmsr"
+        : "=a"(low), "=d"(high)
+        : "c"(msr)
+    );
+    return ((uint64_t)high << 32) | low;
+}
+
+static int canonical(uint64_t va)
+{
+    uint64_t upper = va >> 48;
+    return (va & (1ULL << 47))
+        ? upper == 0xFFFF
+        : upper == 0;
+}
+
+static int valid_page(uint64_t page)
+{
+    return page &&
+           !(page & (PAGE_SIZE - 1)) &&
+           !(page & ~address_mask);
+}
+
+static int owned_index(uint64_t page)
+{
+    for (uint32_t i = 0; i < owned_count; ++i)
+        if (owned[i] == page)
+            return (int)i;
+
+    return -1;
+}
+
+int hellcore_core10_v4_is_owned(uint64_t page)
+{
+    if (!ready || (page & (PAGE_SIZE - 1)))
+        return 0;
+
+    return owned_index(page) >= 0;
+}
+
+static int bootstrap_table_page_allowed(uint64_t page)
+{
+    if (!valid_page(page))
+        return 0;
+
+    if (page == root || owned_index(page) >= 0)
+        return 1;
+
+    if (page >= BOOT_TABLE_RANGE_0_START &&
+        page <= BOOT_TABLE_RANGE_0_END - PAGE_SIZE)
+        return 1;
+
+    if (page >= BOOT_TABLE_RANGE_1_START &&
+        page <= BOOT_TABLE_RANGE_1_END - PAGE_SIZE)
+        return 1;
+
+    return 0;
+}
+
+static volatile uint64_t *raw_table(uint64_t page)
+{
+    if (!bootstrap_table_page_allowed(page))
+        return (volatile uint64_t *)0;
+
+    return (volatile uint64_t *)(uintptr_t)page;
+}
+
+/*
+ * Read-only translation using the active inherited address space.
+ * Page-table memory is accessed through the identity mappings
+ * established by the tested UEFI/QEMU boot environment.
+ */
+static int walk_raw(
+    uint64_t va,
+    uint64_t *pa,
+    uint64_t *flags
+)
+{
+    if (!canonical(va) || !pa || !flags)
+        return 0;
+
+    volatile uint64_t *pml4 = raw_table(root);
+    if (!pml4)
+        return 0;
+
+    uint64_t i4 = (va >> 39) & 511;
+    uint64_t i3 = (va >> 30) & 511;
+    uint64_t i2 = (va >> 21) & 511;
+    uint64_t i1 = (va >> 12) & 511;
+
+    uint64_t e4 = pml4[i4];
+    if (!(e4 & P))
+        return 0;
+
+    volatile uint64_t *pdpt = raw_table(e4 & address_mask);
+    if (!pdpt)
+        return 0;
+
+    uint64_t e3 = pdpt[i3];
+    if (!(e3 & P))
+        return 0;
+
+    uint64_t writable = !!(e4 & W) && !!(e3 & W);
+    uint64_t user = !!(e4 & U) && !!(e3 & U);
+    uint64_t nx = (e4 | e3) & NX;
+
+    if (e3 & PS) {
+        *pa = (e3 & (address_mask & ~((1ULL << 30) - 1))) |
+              (va & ((1ULL << 30) - 1));
+    } else {
+        volatile uint64_t *pd = raw_table(e3 & address_mask);
+        if (!pd)
+            return 0;
+
+        uint64_t e2 = pd[i2];
+        if (!(e2 & P))
+            return 0;
+
+        writable = writable && !!(e2 & W);
+        user = user && !!(e2 & U);
+        nx |= e2 & NX;
+
+        if (e2 & PS) {
+            *pa = (e2 & (address_mask & ~((1ULL << 21) - 1))) |
+                  (va & ((1ULL << 21) - 1));
+        } else {
+            volatile uint64_t *pt = raw_table(e2 & address_mask);
+            if (!pt)
+                return 0;
+
+            uint64_t e1 = pt[i1];
+            if (!(e1 & P))
+                return 0;
+
+            writable = writable && !!(e1 & W);
+            user = user && !!(e1 & U);
+            nx |= e1 & NX;
+
+            *pa = (e1 & address_mask) | (va & 0xFFF);
+        }
+    }
+
+    *flags =
+        (writable ? CORE10_V4_FLAG_WRITE : 0) |
+        (user ? CORE10_V4_FLAG_USER : 0) |
+        (nx ? CORE10_V4_FLAG_NX : 0);
+
+    return 1;
+}
+
+
+/*
+ * Bootstrap boundary:
+ * walk_raw() reads the inherited hierarchy using the identity
+ * mappings independently inspected in the CORE 1.0 QEMU test.
+ *
+ * All ordinary VMM table access goes through this validator.
+ * Shared inherited tables may be read-only. The active root and
+ * privately owned tables must be identity-mapped and writable.
+ */
+static volatile uint64_t *table(uint64_t page)
+{
+    uint64_t mapped = 0;
+    uint64_t flags = 0;
+
+    if (!valid_page(page))
+        return (volatile uint64_t *)0;
+
+    if (!walk_raw(page, &mapped, &flags) || mapped != page)
+        return (volatile uint64_t *)0;
+
+    if ((page == root || owned_index(page) >= 0) &&
+        !(flags & CORE10_V4_FLAG_WRITE))
+        return (volatile uint64_t *)0;
+
+    return raw_table(page);
+}
+
+/* Public translation wrapper. */
+static int walk(
+    uint64_t va,
+    uint64_t *pa,
+    uint64_t *flags
+)
+{
+    return walk_raw(va, pa, flags);
+}
+
+static int identity_writable(uint64_t page)
+{
+    uint64_t pa, flags;
+
+    if (!valid_page(page))
+        return 0;
+
+    if (!walk(page, &pa, &flags) ||
+        pa != page ||
+        !(flags & CORE10_V4_FLAG_WRITE))
+        return 0;
+
+    if (!walk(page + PAGE_SIZE - 1, &pa, &flags) ||
+        pa != page + PAGE_SIZE - 1 ||
+        !(flags & CORE10_V4_FLAG_WRITE))
+        return 0;
+
+    return 1;
+}
+
+static void forget_owned(uint64_t page)
+{
+    int index = owned_index(page);
+    if (index < 0)
+        return;
+
+    for (uint32_t i = (uint32_t)index;
+         i + 1 < owned_count; ++i)
+        owned[i] = owned[i + 1];
+
+    --owned_count;
+    owned[owned_count] = 0;
+}
+
+static void release_table(uint64_t page)
+{
+    if (!page)
+        return;
+
+    forget_owned(page);
+    (void)hellcore_pmm_free_page(page);
+}
+
+static uint64_t allocate_table(void)
+{
+    if (owned_count >= MAX_OWNED || fail_after == 0)
+        return 0;
+
+    if (fail_after > 0)
+        --fail_after;
+
+    uint64_t page = hellcore_pmm_alloc_page();
+    if (!page)
+        return 0;
+
+    if (!valid_page(page) || !identity_writable(page)) {
+        if (!(page & (PAGE_SIZE - 1)))
+            (void)hellcore_pmm_free_page(page);
+        return 0;
+    }
+
+    /*
+     * Register ownership only after validating the candidate page's
+     * identity mapping and write permission. This permits table()
+     * to authorize access to this newly allocated private page.
+     */
+    owned[owned_count++] = page;
+
+    volatile uint64_t *entries = table(page);
+    if (!entries) {
+        forget_owned(page);
+        (void)hellcore_pmm_free_page(page);
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < 512; ++i)
+        entries[i] = 0;
+
+    return page;
+}
+
+static void rollback(uint64_t a, uint64_t b, uint64_t c)
+{
+    if (c) release_table(c);
+    if (b) release_table(b);
+    if (a) release_table(a);
+    ++rollback_count;
+}
+
+int hellcore_core10_v4_init(uint64_t initial_root, uint32_t bits)
+{
+    if (ready || bits < 36 || bits > 52 ||
+        !initial_root || (initial_root & 0xFFF))
+        return 0;
+
+    address_mask =
+        ((1ULL << bits) - 1) & 0x000FFFFFFFFFF000ULL;
+
+    if (initial_root & ~address_mask)
+        return 0;
+
+    if (cr4_read() & CR4_LA57)
+        return 0;
+
+    if (!(msr_read(EFER_MSR) & EFER_NXE))
+        return 0;
+
+    if ((cr3_read() & address_mask) != initial_root)
+        return 0;
+
+    root = initial_root;
+
+    for (uint32_t i = 0; i < 512; ++i)
+        reserved[i] = 0;
+
+    for (uint32_t i = 0; i < MAX_OWNED; ++i)
+        owned[i] = 0;
+
+    owned_count = 0;
+    reserved_count = 0;
+    created_count = 0;
+    removed_count = 0;
+    rollback_count = 0;
+    ownership_errors = 0;
+    fail_after = -1;
+    ready = 1;
+
+    return 1;
+}
+
+int hellcore_core10_v4_find_private_address(uint64_t *address)
+{
+    if (!ready || !address)
+        return 0;
+
+    volatile uint64_t *pml4 = table(root);
+    if (!pml4)
+        return 0;
+
+    for (uint32_t i = 256; i < 512; ++i) {
+        if (!reserved[i] && !(pml4[i] & P)) {
+            reserved[i] = 1;
+            ++reserved_count;
+
+            *address =
+                0xFFFF000000000000ULL |
+                ((uint64_t)i << 39) |
+                0x12345000ULL;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+
+int hellcore_core10_v4_map_page(
+    uint64_t va,
+    uint64_t pa,
+    uint64_t flags
+)
+{
+    if (!ready || !canonical(va) ||
+        (va & 0xFFF) || !valid_page(pa) ||
+        !(flags & CORE10_V4_READ) ||
+        (flags & ~(CORE10_V4_READ | CORE10_V4_WRITE |
+                   CORE10_V4_EXECUTE | CORE10_V4_USER)) ||
+        ((flags & CORE10_V4_WRITE) &&
+         (flags & CORE10_V4_EXECUTE)))
+        return 0;
+
+    uint64_t i4 = (va >> 39) & 511;
+    uint64_t i3 = (va >> 30) & 511;
+    uint64_t i2 = (va >> 21) & 511;
+    uint64_t i1 = (va >> 12) & 511;
+
+    if (i4 < 256 || !reserved[i4])
+        return 0;
+
+    volatile uint64_t *pml4 = table(root);
+    if (!pml4)
+        return 0;
+
+    uint64_t leaf = P;
+    if (flags & CORE10_V4_WRITE) leaf |= W;
+    if (flags & CORE10_V4_USER) leaf |= U;
+    if (!(flags & CORE10_V4_EXECUTE)) leaf |= NX;
+
+    uint64_t user = (flags & CORE10_V4_USER) ? U : 0;
+    uint64_t e4 = pml4[i4];
+
+    /* First mapping: build an entirely private three-level branch. */
+    if (!(e4 & P)) {
+        uint64_t a = allocate_table();
+        if (!a) {
+            ++rollback_count;
+            return 0;
+        }
+
+        uint64_t b = allocate_table();
+        if (!b) {
+            rollback(a, 0, 0);
+            return 0;
+        }
+
+        uint64_t c = allocate_table();
+        if (!c) {
+            rollback(a, b, 0);
+            return 0;
+        }
+
+        volatile uint64_t *pdpt = table(a);
+        volatile uint64_t *pd = table(b);
+        volatile uint64_t *pt = table(c);
+
+        if (!pdpt || !pd || !pt) {
+            rollback(a, b, c);
+            return 0;
+        }
+
+        pt[i1] = pa | leaf;
+        pd[i2] = c | P | W | user;
+        pdpt[i3] = b | P | W | user;
+
+        /* Publish the completed private branch last. */
+        pml4[i4] = a | P | W | user;
+
+        ++created_count;
+        __asm__ volatile ("invlpg (%0)" :: "r"(va) : "memory");
+        return 1;
+    }
+
+    /* Existing PML4 branch must belong entirely to this VMM. */
+    uint64_t pdpt_page = e4 & address_mask;
+    if ((e4 & PS) || !hellcore_core10_v4_is_owned(pdpt_page)) {
+        ++ownership_errors;
+        return 0;
+    }
+
+    volatile uint64_t *pdpt = table(pdpt_page);
+    if (!pdpt)
+        return 0;
+
+    uint64_t e3 = pdpt[i3];
+
+    /* New PD branch: construct PD and PT before publishing it. */
+    if (!(e3 & P)) {
+        uint64_t b = allocate_table();
+        if (!b) {
+            ++rollback_count;
+            return 0;
+        }
+
+        uint64_t c = allocate_table();
+        if (!c) {
+            rollback(0, b, 0);
+            return 0;
+        }
+
+        volatile uint64_t *pd = table(b);
+        volatile uint64_t *pt = table(c);
+
+        if (!pd || !pt) {
+            rollback(0, b, c);
+            return 0;
+        }
+
+        pt[i1] = pa | leaf;
+        pd[i2] = c | P | W | user;
+
+        /* Commit the completed PD branch. */
+        pdpt[i3] = b | P | W | user;
+
+        if (user)
+            pml4[i4] |= U;
+
+        ++created_count;
+        __asm__ volatile ("invlpg (%0)" :: "r"(va) : "memory");
+        return 1;
+    }
+
+    if ((e3 & PS) || !hellcore_core10_v4_is_owned(e3 & address_mask)) {
+        ++ownership_errors;
+        return 0;
+    }
+
+    volatile uint64_t *pd = table(e3 & address_mask);
+    if (!pd)
+        return 0;
+
+    uint64_t e2 = pd[i2];
+
+    /* New PT branch: initialize the leaf before publishing the PT. */
+    if (!(e2 & P)) {
+        uint64_t c = allocate_table();
+        if (!c) {
+            ++rollback_count;
+            return 0;
+        }
+
+        volatile uint64_t *pt = table(c);
+        if (!pt) {
+            rollback(0, 0, c);
+            return 0;
+        }
+
+        pt[i1] = pa | leaf;
+
+        /* Commit the completed PT branch. */
+        pd[i2] = c | P | W | user;
+
+        if (user) {
+            pml4[i4] |= U;
+            pdpt[i3] |= U;
+        }
+
+        ++created_count;
+        __asm__ volatile ("invlpg (%0)" :: "r"(va) : "memory");
+        return 1;
+    }
+
+    if ((e2 & PS) || !hellcore_core10_v4_is_owned(e2 & address_mask)) {
+        ++ownership_errors;
+        return 0;
+    }
+
+    volatile uint64_t *pt = table(e2 & address_mask);
+    if (!pt || (pt[i1] & P))
+        return 0;
+
+    pt[i1] = pa | leaf;
+
+    if (user) {
+        pml4[i4] |= U;
+        pdpt[i3] |= U;
+        pd[i2] |= U;
+    }
+
+    ++created_count;
+    __asm__ volatile ("invlpg (%0)" :: "r"(va) : "memory");
+    return 1;
+}
+
+int hellcore_core10_v4_unmap_page(uint64_t va)
+{
+    if (!ready || !canonical(va) || (va & 0xFFF))
+        return 0;
+
+    uint64_t i4 = (va >> 39) & 511;
+    uint64_t i3 = (va >> 30) & 511;
+    uint64_t i2 = (va >> 21) & 511;
+    uint64_t i1 = (va >> 12) & 511;
+
+    if (i4 < 256 || !reserved[i4])
+        return 0;
+
+    volatile uint64_t *pml4 = table(root);
+    if (!pml4)
+        return 0;
+
+    uint64_t e4 = pml4[i4];
+    if (!(e4 & P) ||
+        !hellcore_core10_v4_is_owned(e4 & address_mask))
+        return 0;
+
+    volatile uint64_t *pdpt = table(e4 & address_mask);
+    if (!pdpt)
+        return 0;
+
+    uint64_t e3 = pdpt[i3];
+    if (!(e3 & P) || (e3 & PS) ||
+        !hellcore_core10_v4_is_owned(e3 & address_mask))
+        return 0;
+
+    volatile uint64_t *pd = table(e3 & address_mask);
+    if (!pd)
+        return 0;
+
+    uint64_t e2 = pd[i2];
+    if (!(e2 & P) || (e2 & PS) ||
+        !hellcore_core10_v4_is_owned(e2 & address_mask))
+        return 0;
+
+    volatile uint64_t *pt = table(e2 & address_mask);
+    if (!pt || !(pt[i1] & P))
+        return 0;
+
+    pt[i1] = 0;
+    ++removed_count;
+    __asm__ volatile ("invlpg (%0)" :: "r"(va) : "memory");
+    return 1;
+}
+
+int hellcore_core10_v4_translate(uint64_t va, uint64_t *pa)
+{
+    uint64_t flags;
+    return ready && pa && walk(va, pa, &flags);
+}
+
+int hellcore_core10_v4_get_flags(uint64_t va, uint64_t *flags)
+{
+    uint64_t pa;
+    return ready && flags && walk(va, &pa, flags);
+}
+
+uint64_t hellcore_core10_v4_root_entry(uint32_t index)
+{
+    if (!ready || index >= 512)
+        return 0;
+
+    volatile uint64_t *pml4 = table(root);
+    return pml4 ? pml4[index] : 0;
+}
+
+void hellcore_core10_v4_test_fail_after(int32_t count)
+{
+    fail_after = count;
+}
+
+void hellcore_core10_v4_get_report(CORE10_V4_REPORT *report)
+{
+    if (!report)
+        return;
+
+    report->reserved_slots = reserved_count;
+    report->owned_tables = owned_count;
+    report->mappings_created = created_count;
+    report->mappings_removed = removed_count;
+    report->allocation_rollbacks = rollback_count;
+    report->ownership_failures = ownership_errors;
+}

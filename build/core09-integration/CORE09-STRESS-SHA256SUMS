@@ -1,0 +1,3 @@
+9301c13c8b728b185b55dd6033da20e0cd9b65c2ec5d3d71af805ce1a3bb4f7c  build/core09-integration/qemu-stress-001/serial.log
+b87a12b46b79d067bac3c6c3c52ff6dc1c9e34993889e53ad9e1ed9d9e519fc8  build/core09-integration/qemu-stress-001/esp/EFI/BOOT/BOOTX64.EFI
+f52da81cfe5fa0eb154644bc8c488160c26e6e5899f3160b19666a1eba21f05e  build/core09-integration/qemu-stress-001/esp/EFI/BOOT/hellcore.elf
