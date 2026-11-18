@@ -44,30 +44,49 @@ int hellcore_uefi_reserve_pmm_bitmaps(
             map_size == 0)
             return 0;
 
-        if (map_size > UINT64_MAX - descriptor_size * 16ULL)
+        if (descriptor_size > UINT64_MAX / 16ULL)
             return 0;
 
-        map_size += descriptor_size * 16ULL;
+        uint64_t extra_bytes = descriptor_size * 16ULL;
+
+        if (map_size > UINT64_MAX - extra_bytes)
+            return 0;
+
+        map_size += extra_bytes;
 
         status = allocate_pool(EFI_LOADER_DATA, map_size, (void **)&map);
         if (status != EFI_SUCCESS || !map)
             return 0;
 
+
         {
-            HELLCORE_UINTN actual_size = map_size;
+            HELLCORE_UINTN map_capacity = map_size;
+            HELLCORE_UINTN actual_size = map_capacity;
 
             status = get_memory_map(
-                &actual_size, map, &map_key,
-                &descriptor_size, &descriptor_version);
+                &actual_size,
+                map,
+                &map_key,
+                &descriptor_size,
+                &descriptor_version);
 
             if (status == EFI_SUCCESS) {
+                if (actual_size > map_capacity) {
+                    free_pool(map);
+                    return 0;
+                }
+
                 map_size = actual_size;
                 break;
             }
+
+            free_pool(map);
+            map = 0;
+
+            if (status != EFI_BUFFER_TOO_SMALL)
+                return 0;
         }
 
-        free_pool(map);
-        map = 0;
     }
 
     if (!map || status != EFI_SUCCESS ||

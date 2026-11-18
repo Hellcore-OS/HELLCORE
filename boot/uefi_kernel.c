@@ -1,3 +1,4 @@
+#include "uefi_abi.h"
 #include <stdint.h>
 
 typedef uint64_t UINTN;
@@ -15,7 +16,7 @@ typedef struct {
     uint8_t Data4[8];
 } EFI_GUID;
 
-typedef EFI_STATUS (*EFI_HANDLE_PROTOCOL)(
+typedef EFI_STATUS (HELLCORE_EFIAPI *EFI_HANDLE_PROTOCOL)(
     EFI_HANDLE, EFI_GUID *, void **);
 
 typedef struct {
@@ -38,13 +39,13 @@ typedef struct EFI_FILE_PROTOCOL EFI_FILE_PROTOCOL;
 
 struct EFI_FILE_PROTOCOL {
     uint64_t Revision;
-    EFI_STATUS (*Open)(EFI_FILE_PROTOCOL *, EFI_FILE_PROTOCOL **, CHAR16 *, uint64_t, uint64_t);
-    EFI_STATUS (*Close)(EFI_FILE_PROTOCOL *);
+    EFI_STATUS (HELLCORE_EFIAPI *Open)(EFI_FILE_PROTOCOL *, EFI_FILE_PROTOCOL **, CHAR16 *, uint64_t, uint64_t);
+    EFI_STATUS (HELLCORE_EFIAPI *Close)(EFI_FILE_PROTOCOL *);
     void *Delete;
-    EFI_STATUS (*Read)(EFI_FILE_PROTOCOL *, UINTN *, void *);
+    EFI_STATUS (HELLCORE_EFIAPI *Read)(EFI_FILE_PROTOCOL *, UINTN *, void *);
     void *Write;
-    EFI_STATUS (*GetPosition)(EFI_FILE_PROTOCOL *, uint64_t *);
-    EFI_STATUS (*SetPosition)(EFI_FILE_PROTOCOL *, uint64_t);
+    EFI_STATUS (HELLCORE_EFIAPI *GetPosition)(EFI_FILE_PROTOCOL *, uint64_t *);
+    EFI_STATUS (HELLCORE_EFIAPI *SetPosition)(EFI_FILE_PROTOCOL *, uint64_t);
     void *GetInfo;
     void *SetInfo;
     void *Flush;
@@ -52,7 +53,7 @@ struct EFI_FILE_PROTOCOL {
 
 typedef struct {
     uint64_t Revision;
-    EFI_STATUS (*OpenVolume)(void *, EFI_FILE_PROTOCOL **);
+    EFI_STATUS (HELLCORE_EFIAPI *OpenVolume)(void *, EFI_FILE_PROTOCOL **);
 } EFI_SIMPLE_FILE_SYSTEM_PROTOCOL;
 
 typedef struct {
@@ -346,6 +347,7 @@ EFI_STATUS hellcore_load_kernel_elf(
             ph->memsz == 0 ||
             ph->offset > file_size ||
             ph->filesz > file_size - ph->offset ||
+            ph->paddr != ph->vaddr ||
             ph->paddr > UINT64_MAX - ph->memsz ||
             !range_inside_kernel(ph->paddr, ph->memsz)) {
             serial_write("HELLCORE ELF: INVALID LOAD SEGMENT BOUNDS\r\n");
@@ -365,7 +367,7 @@ EFI_STATUS hellcore_load_kernel_elf(
 
         if ((ph->flags & ELF_PF_X) &&
             header.entry >= ph->vaddr &&
-            header.entry - ph->vaddr < ph->memsz) {
+            header.entry - ph->vaddr < ph->filesz) {
             entry_valid = 1;
         }
 

@@ -1,3 +1,4 @@
+#include "uefi_abi.h"
 #include <stdint.h>
 #include "../include/hellcore_boot_info.h"
 #include "uefi_pmm_reserve.h"
@@ -32,24 +33,24 @@ typedef struct {
 
 typedef struct {
     void *Reset;
-    EFI_STATUS (*OutputString)(void *, CHAR16 *);
+    EFI_STATUS (HELLCORE_EFIAPI *OutputString)(void *, CHAR16 *);
 } EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
 
-typedef EFI_STATUS (*EFI_ALLOCATE_PAGES)(
+typedef EFI_STATUS (HELLCORE_EFIAPI *EFI_ALLOCATE_PAGES)(
     UINT32, UINT32, UINTN, uint64_t *);
 
-typedef EFI_STATUS (*EFI_GET_MEMORY_MAP)(
+typedef EFI_STATUS (HELLCORE_EFIAPI *EFI_GET_MEMORY_MAP)(
     UINTN *, EFI_MEMORY_DESCRIPTOR *, UINTN *, UINTN *, UINT32 *);
 
-typedef EFI_STATUS (*EFI_ALLOCATE_POOL)(
+typedef EFI_STATUS (HELLCORE_EFIAPI *EFI_ALLOCATE_POOL)(
     UINT32, UINTN, void **);
 
-typedef EFI_STATUS (*EFI_FREE_POOL)(void *);
+typedef EFI_STATUS (HELLCORE_EFIAPI *EFI_FREE_POOL)(void *);
 
-typedef EFI_STATUS (*EFI_EXIT_BOOT_SERVICES)(
+typedef EFI_STATUS (HELLCORE_EFIAPI *EFI_EXIT_BOOT_SERVICES)(
     EFI_HANDLE, UINTN);
 
-typedef EFI_STATUS (*EFI_LOCATE_PROTOCOL)(
+typedef EFI_STATUS (HELLCORE_EFIAPI *EFI_LOCATE_PROTOCOL)(
     void *, void *, void **);
 
 typedef struct { uint32_t Data1; uint16_t Data2; uint16_t Data3; uint8_t Data4[8]; } EFI_GUID;
@@ -222,7 +223,7 @@ EFI_STATUS hellcore_probe_kernel_file(EFI_HANDLE, void *);
 EFI_STATUS hellcore_load_kernel_elf(EFI_HANDLE, void *, uint64_t *);
 __attribute__((noreturn)) void hellcore_enter_kernel(HELLCORE_BOOT_INFO *, uint64_t, uint64_t, uint64_t);
 
-EFI_STATUS efi_main(
+EFI_STATUS HELLCORE_EFIAPI efi_main(
     EFI_HANDLE ImageHandle,
     EFI_SYSTEM_TABLE *SystemTable
 ) {
@@ -398,18 +399,23 @@ EFI_STATUS efi_main(
     }
 
     void *map_buffer = 0;
+    UINTN map_capacity = 0;
 
     /*
-     * Allocate extra room because the map can grow while
-     * the EFI application is running.
+     * Preserve allocated capacity separately from actual map size.
      */
     for (unsigned int attempt = 0; attempt < 4; ++attempt) {
-        UINTN allocation_size =
-            map_size + (descriptor_size * 16);
+        if (descriptor_size < sizeof(EFI_MEMORY_DESCRIPTOR) ||
+            descriptor_size > (UINT64_MAX - map_size) / 16ULL) {
+            serial_write("ERROR: INVALID MEMORY MAP CAPACITY\r\n");
+            stop();
+        }
+
+        map_capacity = map_size + descriptor_size * 16ULL;
 
         status = bs->AllocatePool(
             EFI_LOADER_DATA,
-            allocation_size,
+            map_capacity,
             &map_buffer
         );
 
@@ -418,18 +424,30 @@ EFI_STATUS efi_main(
             stop();
         }
 
-        map_size = allocation_size;
+        UINTN actual_size = map_capacity;
 
         status = bs->GetMemoryMap(
-            &map_size,
+            &actual_size,
             (EFI_MEMORY_DESCRIPTOR *)map_buffer,
             &map_key,
             &descriptor_size,
             &descriptor_version
         );
 
-        if (status == EFI_SUCCESS)
+        if (status == EFI_SUCCESS) {
+            if (actual_size > map_capacity ||
+                actual_size == 0 ||
+                descriptor_size < sizeof(EFI_MEMORY_DESCRIPTOR) ||
+                actual_size % descriptor_size != 0) {
+                bs->FreePool(map_buffer);
+                map_buffer = 0;
+                serial_write("ERROR: INVALID CAPTURED MEMORY MAP\r\n");
+                stop();
+            }
+
+            map_size = actual_size;
             break;
+        }
 
         bs->FreePool(map_buffer);
         map_buffer = 0;
@@ -438,6 +456,8 @@ EFI_STATUS efi_main(
             serial_write("ERROR: MEMORY MAP RETRIEVAL FAILED\r\n");
             stop();
         }
+
+        map_size = actual_size;
     }
 
     if (!map_buffer || status != EFI_SUCCESS) {
@@ -486,8 +506,10 @@ EFI_STATUS efi_main(
          * The key became stale. Refresh the map without
          * allocating or freeing memory, then retry.
          */
+        UINTN actual_size = map_capacity;
+
         status = bs->GetMemoryMap(
-            &map_size,
+            &actual_size,
             (EFI_MEMORY_DESCRIPTOR *)map_buffer,
             &map_key,
             &descriptor_size,
@@ -498,6 +520,16 @@ EFI_STATUS efi_main(
             serial_write("ERROR: MEMORY MAP REFRESH FAILED\r\n");
             stop();
         }
+
+        if (actual_size > map_capacity ||
+            actual_size == 0 ||
+            descriptor_size < sizeof(EFI_MEMORY_DESCRIPTOR) ||
+            actual_size % descriptor_size != 0) {
+            serial_write("ERROR: REFRESHED MEMORY MAP INVALID\r\n");
+            stop();
+        }
+
+        map_size = actual_size;
 
         g_boot_info.memory_map_size = map_size;
         g_boot_info.memory_map_key = map_key;
