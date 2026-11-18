@@ -2,57 +2,82 @@
 
 **Experimental x86-64 operating-system development project.**
 
-HELLCORE focuses on UEFI boot, kernel initialization, physical memory management (PMM), virtual memory management (VMM), and low-level hardware interaction.
+HELLCORE is an in-progress operating system focused on UEFI boot, kernel initialization, physical memory management (PMM), virtual memory management (VMM), and low-level hardware interaction.
 
-> Status: Work in progress. Source code and historical snapshots are present; this repository does not claim a complete or production-ready operating system.
+**Status:** Work in progress. The repository contains active kernel development, host-side regression tests, and verified source checkpoints. It is not a complete or production-ready operating system.
 
-## Development areas
+## Current engineering status
 
-- UEFI boot, kernel loading, memory-map handling, and handoff.
-- x86-64 kernel entry, GDT, IDT, exception handling, and diagnostics.
-- CORE 0.9 physical memory management and host-test development.
-- CORE 1.0 four-level virtual memory management, private page-table ownership, mapping, unmapping, permissions, rollback, and PMM integrity.
+### CORE11 — Virtual memory management
 
-## CORE 1.0 VMM V5
+CORE11.1 through CORE11.5 have been implemented, host-tested, checkpointed, and published.
 
-Source files:
+| Milestone | Scope | Recorded result |
+|---|---|---|
+| CORE11.1 | User/supervisor page permissions | Verified |
+| CORE11.2 | NX permission aggregation across paging levels | Verified |
+| CORE11.3 | 1 GiB huge-page translation and flags | Verified |
+| CORE11.4 | Unambiguous virtual-to-physical translation API | 46 tests passed |
+| CORE11.5 | Transactional page-table allocation rollback | 76 tests passed |
 
-- `build/core10-vmm/v5/core10_kernel_private_vmm_v5.c`
-- `build/core10-vmm/v5/core10_private_vmm_v5.c`
-- `build/core10-vmm/v5/core10_private_vmm_v5.h`
+The current translation API is:
 
-V5 is an active development snapshot. Its presence does not establish that it has passed a complete build or runtime validation. V3 and V4 historical snapshots are preserved.
+```c
+int hellcore_vmm_translate(
+    uint64_t virtual_address,
+    uint64_t *physical_address
+);
+```
+It returns `1` on success and `0` on failure. A physical address of zero is not confused with failure.
+CORE11.5 makes an individual `hellcore_vmm_map_page()` operation transactional across its page-table allocation levels. On failure, it restores journaled entries and releases newly allocated page-table pages. This does not establish whole-range rollback for `hellcore_vmm_map_identity_range()`.
+
+## Test and validation record
+
+- CORE11.5 host regression suite: 76 passed, 0 failed.
+- CORE11.4 translation regression suite: 46 passed, 0 failed.
+- Tests compile production `kernel/vmm.c` with `HELLCORE_VMM_HOST_TEST` and test-only PMM/hardware stubs.
+- Strict freestanding x86-64 syntax validation passed.
+- Git whitespace validation passed.
+
+These results do not establish successful CR3 activation, a complete integrated-kernel QEMU boot, or physical-hardware operation. Host tests, compilation, emulation, and hardware validation must be reported separately.
+
+## Verified CORE11 checkpoints
+
+- `checkpoints/core11_1_user_verified_20261118`
+- `checkpoints/core11_2_nx_verified_20261118`
+- `checkpoints/core11_3_1gib_verified_20261118`
+- `checkpoints/core11_4_translate_api_verified_20261118`
+- `checkpoints/core11_5_vmm_rollback_verified_20261118`
+
+Checkpoint manifests can be verified with `sha256sum -c SHA256SUMS.txt` from the respective checkpoint directory.
 
 ## Repository layout
 
 - `boot/` — UEFI boot and handoff code.
-- `include/` — shared boot information.
+- `include/` — shared boot information and interfaces.
 - `kernel/` — kernel, PMM, VMM, GDT/IDT, and exception code.
+- `tests/` — host-side regression tests.
+- `checkpoints/` — verified source and test snapshots.
 - `build/` — development stages and build artifacts.
-- `tests/` — test source files.
 - `Makefile` — current packaging targets.
-- `.gitignore` — generated-file exclusions.
 
-## Build notes
+## Build notes and safety
 
-The root `Makefile` currently packages an existing kernel ELF; it is not a complete source-to-ELF build system. The ISO target expects `build/kernel/hellcore.elf` and tools including `objcopy` and `xorriso`.
+The root Makefile packages an existing `build/kernel/hellcore.elf`; it is not a complete source-to-ELF build system. The ISO target requires `objcopy` and `xorriso`.
 
-A successful `make iso` packages the existing ELF; it does not prove a fresh kernel compilation or successful boot.
+A successful ISO packaging operation does not prove a fresh kernel compilation or successful boot.
 
-**Warning:** Do not run `make clean` until its cleanup rule is corrected. It can remove the entire `build/` directory, including tracked source.
+**Warning:** Do not run root `make clean`. Its cleanup rule removes the entire `build/` directory, which may contain tracked development source. Clean individual test binaries only in their test directories.
 
-## Validation
+## Development roadmap
 
-Report host tests, compilation, QEMU boot tests, and physical-hardware tests separately. Do not claim a test passed unless it was actually executed and recorded.
-
-## Roadmap
-
-1. Review and complete VMM V5.
-2. Integrate VMM with the kernel and PMM.
+1. Audit PMM/VMM integration, including initialization order, allocation and release contracts, physical-address limits, page-table ownership, memory-map handling, and failure paths.
+2. Define the next test-first milestone from the audit findings. Establish baseline tests and failure-injection coverage before changing production code.
 3. Establish a reproducible source-to-ELF build.
-4. Validate UEFI boot and kernel handoff.
-5. Run host and QEMU integration tests.
-6. Expand hardware-driver and storage support.
+4. Validate kernel initialization, UEFI handoff, and QEMU boot behavior.
+5. Expand hardware-driver and storage support.
+
+Subsystem readiness must be established through source review and reproducible tests, not assumed from the completion of an earlier milestone.
 
 ## Repository
 
