@@ -1,0 +1,11 @@
+ M kernel/vmm.c
+?? boot/uefi_kernel.c.PRE_EFIABI_20261117_164607
+?? boot/uefi_kernel.c.PRE_ELF_VALIDATION_20261117_143640
+?? boot/uefi_memcheck.c.PRE_EFIABI_20261117_164607
+?? boot/uefi_memcheck.c.PRE_MAPCAPACITY_20261117_181050
+?? boot/uefi_pmm_reserve.c.PRE_EFIABI_20261117_164607
+?? boot/uefi_pmm_reserve.h.PRE_EFIABI_20261117_164607
+?? checkpoints/
+?? tests/core10_vmm_verify/
+?? tests/core11_1_vmm_user/
+?? tests/core11_2_vmm_nx/

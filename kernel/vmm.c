@@ -3,7 +3,11 @@
 
 #define PAGE_SIZE 4096ULL
 #define PAGE_MASK 0x000FFFFFFFFFF000ULL
+#ifdef HELLCORE_VMM_HOST_TEST
+#define ADDRESS_LIMIT UINT64_MAX
+#else
 #define ADDRESS_LIMIT 0x100000000ULL
+#endif
 
 #define PTE_PRESENT  (1ULL << 0)
 #define PTE_WRITE    (1ULL << 1)
@@ -14,6 +18,12 @@
 #define EFER_NXE (1ULL << 11)
 
 static uint64_t *root_table;
+
+#ifdef HELLCORE_VMM_HOST_TEST
+void hellcore_vmm_host_test_set_root(uint64_t *root) {
+    root_table = root;
+}
+#endif
 static int map_boot_memory(const HELLCORE_BOOT_INFO *boot);
 
 typedef struct {
@@ -53,22 +63,36 @@ static void cpuid(
     uint32_t *c,
     uint32_t *d
 ) {
+#ifdef HELLCORE_VMM_HOST_TEST
+    (void)subleaf;
+    *a = (leaf == 0x80000000U) ? 0x80000001U : 0;
+    *b = 0;
+    *c = 0;
+    *d = (leaf == 0x80000001U) ? (1U << 20) : 0;
+#else
     __asm__ volatile (
         "cpuid"
         : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d)
         : "a"(leaf), "c"(subleaf)
     );
+#endif
 }
 
 static uint64_t read_msr(uint32_t msr) {
     uint32_t low;
     uint32_t high;
 
+#ifdef HELLCORE_VMM_HOST_TEST
+    (void)msr;
+    low = 0;
+    high = 0;
+#else
     __asm__ volatile (
         "rdmsr"
         : "=a"(low), "=d"(high)
         : "c"(msr)
     );
+#endif
 
     return ((uint64_t)high << 32) | low;
 }
@@ -77,11 +101,17 @@ static void write_msr(uint32_t msr, uint64_t value) {
     uint32_t low = (uint32_t)value;
     uint32_t high = (uint32_t)(value >> 32);
 
+#ifdef HELLCORE_VMM_HOST_TEST
+    (void)msr;
+    (void)low;
+    (void)high;
+#else
     __asm__ volatile (
         "wrmsr"
         :
         : "c"(msr), "a"(low), "d"(high)
     );
+#endif
 }
 
 static int cpu_supports_nx(void) {
@@ -99,7 +129,11 @@ static int cpu_supports_nx(void) {
 static int cpu_uses_five_level_paging(void) {
     uint64_t cr4;
 
+#ifdef HELLCORE_VMM_HOST_TEST
+    cr4 = 0;
+#else
     __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
+#endif
 
     return (cr4 & (1ULL << 12)) != 0;
 }
@@ -114,23 +148,83 @@ static int canonical_address(uint64_t address) {
         : upper == 0xFFFF;
 }
 
-static uint64_t *get_or_create_table(uint64_t *parent, uint64_t index) {
+typedef struct {
+    uint64_t *parent;
+    uint64_t index;
+    uint64_t original_entry;
+    uint64_t allocated_page;
+} VMM_MAP_JOURNAL_ENTRY;
+
+#define VMM_MAP_JOURNAL_CAPACITY 3
+
+static uint64_t *get_or_create_table(
+    uint64_t *parent,
+    uint64_t index,
+    uint64_t flags,
+    VMM_MAP_JOURNAL_ENTRY *journal,
+    uint64_t *journal_count
+) {
     uint64_t entry = parent[index];
 
     if (entry & PTE_PRESENT) {
         if (entry & PTE_HUGE)
             return 0;
 
+        if ((flags & HELLCORE_VMM_MAP_USER) &&
+            !(entry & PTE_USER)) {
+
+            if (*journal_count >= VMM_MAP_JOURNAL_CAPACITY)
+                return 0;
+
+            journal[*journal_count].parent = parent;
+            journal[*journal_count].index = index;
+            journal[*journal_count].original_entry = entry;
+            journal[*journal_count].allocated_page = 0;
+            ++(*journal_count);
+
+            parent[index] |= PTE_USER;
+        }
+
         return (uint64_t *)(uintptr_t)(entry & PAGE_MASK);
     }
+
+    if (*journal_count >= VMM_MAP_JOURNAL_CAPACITY)
+        return 0;
 
     uint64_t page = allocate_table();
 
     if (!page)
         return 0;
 
-    parent[index] = page | PTE_PRESENT | PTE_WRITE;
+    uint64_t new_entry = page | PTE_PRESENT | PTE_WRITE;
+
+    if (flags & HELLCORE_VMM_MAP_USER)
+        new_entry |= PTE_USER;
+
+    journal[*journal_count].parent = parent;
+    journal[*journal_count].index = index;
+    journal[*journal_count].original_entry = entry;
+    journal[*journal_count].allocated_page = page;
+    ++(*journal_count);
+
+    parent[index] = new_entry;
+
     return (uint64_t *)(uintptr_t)page;
+}
+
+static void rollback_map_journal(
+    VMM_MAP_JOURNAL_ENTRY *journal,
+    uint64_t journal_count
+) {
+    while (journal_count > 0) {
+        VMM_MAP_JOURNAL_ENTRY *item =
+            &journal[--journal_count];
+
+        item->parent[item->index] = item->original_entry;
+
+        if (item->allocated_page)
+            (void)hellcore_pmm_free_page(item->allocated_page);
+    }
 }
 
 int hellcore_vmm_map_page(
@@ -145,22 +239,40 @@ int hellcore_vmm_map_page(
         !canonical_address(virtual_address))
         return 0;
 
+    VMM_MAP_JOURNAL_ENTRY journal[VMM_MAP_JOURNAL_CAPACITY];
+    uint64_t journal_count = 0;
+
     uint64_t pml4_index = (virtual_address >> 39) & 0x1FF;
     uint64_t pdpt_index = (virtual_address >> 30) & 0x1FF;
     uint64_t pd_index = (virtual_address >> 21) & 0x1FF;
     uint64_t pt_index = (virtual_address >> 12) & 0x1FF;
 
-    uint64_t *pdpt = get_or_create_table(root_table, pml4_index);
-    if (!pdpt)
-        return 0;
+    uint64_t *pdpt = get_or_create_table(
+        root_table, pml4_index, flags, journal, &journal_count
+    );
 
-    uint64_t *pd = get_or_create_table(pdpt, pdpt_index);
-    if (!pd)
+    if (!pdpt) {
+        rollback_map_journal(journal, journal_count);
         return 0;
+    }
 
-    uint64_t *pt = get_or_create_table(pd, pd_index);
-    if (!pt)
+    uint64_t *pd = get_or_create_table(
+        pdpt, pdpt_index, flags, journal, &journal_count
+    );
+
+    if (!pd) {
+        rollback_map_journal(journal, journal_count);
         return 0;
+    }
+
+    uint64_t *pt = get_or_create_table(
+        pd, pd_index, flags, journal, &journal_count
+    );
+
+    if (!pt) {
+        rollback_map_journal(journal, journal_count);
+        return 0;
+    }
 
     uint64_t entry = physical_address | PTE_PRESENT;
 
@@ -175,7 +287,11 @@ int hellcore_vmm_map_page(
 
     pt[pt_index] = entry;
 
+#ifndef HELLCORE_VMM_HOST_TEST
     __asm__ volatile ("invlpg (%0)" : : "r"(virtual_address) : "memory");
+#else
+    (void)virtual_address;
+#endif
 
     return 1;
 }
@@ -214,12 +330,24 @@ int hellcore_vmm_unmap_page(uint64_t virtual_address) {
 
     pt[pt_index] = 0;
 
+#ifndef HELLCORE_VMM_HOST_TEST
     __asm__ volatile ("invlpg (%0)" : : "r"(virtual_address) : "memory");
+#else
+    (void)virtual_address;
+#endif
 
     return 1;
 }
 
-uint64_t hellcore_vmm_translate(uint64_t virtual_address) {
+int hellcore_vmm_translate(
+    uint64_t virtual_address,
+    uint64_t *physical_address
+) {
+    if (!physical_address)
+        return 0;
+
+    *physical_address = 0;
+
     if (!root_table || !canonical_address(virtual_address))
         return 0;
 
@@ -238,15 +366,25 @@ uint64_t hellcore_vmm_translate(uint64_t virtual_address) {
     if (!(entry & PTE_PRESENT))
         return 0;
 
+    if (entry & PTE_HUGE) {
+        *physical_address =
+            (entry & 0x000FFFFFC0000000ULL) |
+            (virtual_address & 0x3FFFFFFFULL);
+        return 1;
+    }
+
     uint64_t *pd = (uint64_t *)(uintptr_t)(entry & PAGE_MASK);
 
     entry = pd[pd_index];
     if (!(entry & PTE_PRESENT))
         return 0;
 
-    if (entry & PTE_HUGE)
-        return (entry & 0x000FFFFFFFE00000ULL) |
-               (virtual_address & 0x1FFFFFULL);
+    if (entry & PTE_HUGE) {
+        *physical_address =
+            (entry & 0x000FFFFFFFE00000ULL) |
+            (virtual_address & 0x1FFFFFULL);
+        return 1;
+    }
 
     uint64_t *pt = (uint64_t *)(uintptr_t)(entry & PAGE_MASK);
 
@@ -254,8 +392,11 @@ uint64_t hellcore_vmm_translate(uint64_t virtual_address) {
     if (!(entry & PTE_PRESENT))
         return 0;
 
-    return (entry & PAGE_MASK) |
-           (virtual_address & (PAGE_SIZE - 1));
+    *physical_address =
+        (entry & PAGE_MASK) |
+        (virtual_address & (PAGE_SIZE - 1));
+
+    return 1;
 }
 
 int hellcore_vmm_get_flags(uint64_t virtual_address, uint64_t *flags) {
@@ -271,24 +412,36 @@ int hellcore_vmm_get_flags(uint64_t virtual_address, uint64_t *flags) {
     if (!(entry & PTE_PRESENT))
         return 0;
     uint64_t effective = entry;
+    uint64_t effective_nx = entry & PTE_NX;
 
     uint64_t *pdpt = (uint64_t *)(uintptr_t)(entry & PAGE_MASK);
     entry = pdpt[pdpt_index];
     if (!(entry & PTE_PRESENT))
         return 0;
     effective &= entry;
+    effective_nx |= entry & PTE_NX;
+
+    if (entry & PTE_HUGE) {
+        *flags = HELLCORE_VMM_PAGE_PRESENT |
+                 ((effective & PTE_WRITE) ? HELLCORE_VMM_PAGE_WRITE : 0) |
+                 ((effective & PTE_USER) ? HELLCORE_VMM_PAGE_USER : 0) |
+                 ((effective_nx & PTE_NX) ? HELLCORE_VMM_PAGE_NX : 0) |
+                 HELLCORE_VMM_PAGE_HUGE;
+        return 1;
+    }
 
     uint64_t *pd = (uint64_t *)(uintptr_t)(entry & PAGE_MASK);
     entry = pd[pd_index];
     if (!(entry & PTE_PRESENT))
         return 0;
     effective &= entry;
+    effective_nx |= entry & PTE_NX;
 
     if (entry & PTE_HUGE) {
         *flags = HELLCORE_VMM_PAGE_PRESENT |
                  ((effective & PTE_WRITE) ? HELLCORE_VMM_PAGE_WRITE : 0) |
                  ((effective & PTE_USER) ? HELLCORE_VMM_PAGE_USER : 0) |
-                 ((entry & PTE_NX) ? HELLCORE_VMM_PAGE_NX : 0) |
+                 ((effective_nx & PTE_NX) ? HELLCORE_VMM_PAGE_NX : 0) |
                  HELLCORE_VMM_PAGE_HUGE;
         return 1;
     }
@@ -298,11 +451,12 @@ int hellcore_vmm_get_flags(uint64_t virtual_address, uint64_t *flags) {
     if (!(entry & PTE_PRESENT))
         return 0;
     effective &= entry;
+    effective_nx |= entry & PTE_NX;
 
     *flags = HELLCORE_VMM_PAGE_PRESENT |
              ((effective & PTE_WRITE) ? HELLCORE_VMM_PAGE_WRITE : 0) |
              ((effective & PTE_USER) ? HELLCORE_VMM_PAGE_USER : 0) |
-             ((effective & PTE_NX) ? HELLCORE_VMM_PAGE_NX : 0);
+             ((effective_nx & PTE_NX) ? HELLCORE_VMM_PAGE_NX : 0);
     return 1;
 }
 
@@ -334,9 +488,14 @@ int hellcore_vmm_init(const HELLCORE_BOOT_INFO *boot) {
     write_msr(EFER_MSR, efer | EFER_NXE);
 
     uint64_t cr0;
+#ifdef HELLCORE_VMM_HOST_TEST
+    cr0 = 0;
+    (void)cr0;
+#else
     __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
     cr0 |= (1ULL << 16);
     __asm__ volatile ("mov %0, %%cr0" : : "r"(cr0) : "memory");
+#endif
 
     uint64_t new_root = allocate_table();
 

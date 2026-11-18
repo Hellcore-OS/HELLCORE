@@ -1,0 +1,26 @@
+HELLCORE CORE11.1 USER PERMISSION REPAIR
+
+Host regression:
+14 assertions passed
+0 assertions failed
+
+Production syntax:
+clang --target=x86_64-unknown-elf
+-std=c11 -ffreestanding -Wall -Wextra -Werror
+-Wno-unused-function -fsyntax-only kernel/vmm.c
+Exit status: 0
+
+git diff --check:
+Passed
+
+Scope:
+- USER propagation to newly created intermediate entries.
+- USER promotion of existing intermediate entries.
+- Supervisor-only leaf protection.
+- Effective USER permission reporting.
+
+Limitations:
+- Host regression test only.
+- No QEMU runtime validation claimed.
+- No hardware privilege-transition test claimed.
+- CR3 activation not performed.

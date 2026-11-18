@@ -1,0 +1,23 @@
+HELLCORE CORE11.3 - 1 GiB Huge-Page Translation
+
+Host regression tests:
+33 passed, 0 failed.
+
+Coverage:
+- CORE11.1 user permission propagation.
+- CORE11.2 NX aggregation across paging levels.
+- 2 MiB huge-page NX reporting.
+- CORE11.3 1 GiB PDPT huge-page translation.
+- 30-bit offset translation.
+- Effective WRITE, USER and NX reporting.
+
+Strict x86-64 freestanding syntax check:
+PASS (exit 0).
+
+git diff --check:
+PASS (exit 0).
+
+Limitations:
+Host tests execute production VMM source with test-only PMM and
+hardware-operation stubs. No CR3 activation, QEMU boot, or
+real-hardware validation is claimed.

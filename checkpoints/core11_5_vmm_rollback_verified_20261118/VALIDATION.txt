@@ -1,0 +1,27 @@
+HELLCORE CORE11.5 — PAGE-TABLE ALLOCATION ROLLBACK
+
+Validation results:
+- CORE11.5 rollback host regression tests: 76 passed, 0 failed.
+- CORE11.4 translation regression tests: 46 passed, 0 failed.
+- Strict x86-64 freestanding syntax check: passed, exit 0.
+- git diff --check: passed, exit 0.
+
+Implementation:
+- hellcore_vmm_map_page records newly installed page-table entries
+  and intermediate USER permission promotions in a bounded journal.
+- On failure, journal entries are restored in reverse order.
+- Newly allocated page-table pages are released during rollback.
+- Existing mappings and their prior permissions are preserved.
+
+Test scope:
+- Tests compile the production kernel/vmm.c using
+  HELLCORE_VMM_HOST_TEST and test-only PMM/hardware stubs.
+- Allocation-failure injection covers each of the three table levels.
+- Tests verify entry restoration, allocation accounting, translation,
+  and preservation of supervisor-only mappings.
+
+Limitations:
+- No CR3 activation, QEMU boot, or real-hardware validation performed.
+- This milestone makes map_page transactional; it does not make a
+  multi-page map_identity_range operation transactional.
+- CORE11.4 checkpoint remains frozen and unmodified.

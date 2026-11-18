@@ -25,7 +25,10 @@ int hellcore_vmm_map_page(
 
 int hellcore_vmm_unmap_page(uint64_t virtual_address);
 
-uint64_t hellcore_vmm_translate(uint64_t virtual_address);
+int hellcore_vmm_translate(
+    uint64_t virtual_address,
+    uint64_t *physical_address
+);
 
 int hellcore_vmm_get_flags(uint64_t virtual_address, uint64_t *flags);
 uint64_t hellcore_vmm_get_root(void);

@@ -1,0 +1,35 @@
+HELLCORE CORE11.4 - Translation API Correction
+
+Host regression tests:
+46 passed, 0 failed.
+
+Coverage:
+- 4 KiB translation and page offset.
+- 2 MiB huge-page translation and page offset.
+- 1 GiB huge-page translation and 30-bit offset.
+- Physical address zero is a valid translation result.
+- Unmapped and noncanonical address failure handling.
+- Null output pointer rejection.
+- Existing CORE11.1 USER permission tests.
+- Existing CORE11.2 NX aggregation tests.
+- Existing CORE11.3 1 GiB translation tests.
+
+API:
+int hellcore_vmm_translate(uint64_t virtual_address,
+                           uint64_t *physical_address);
+
+Returns 1 on success and 0 on failure.
+A successful physical address may be zero.
+
+Strict x86-64 freestanding syntax check:
+PASS (exit 0).
+
+git diff --check:
+PASS (exit 0).
+
+Limitations:
+Host tests execute production VMM source with test-only PMM
+and hardware-operation stubs. No CR3 activation, QEMU boot,
+or real-hardware validation is claimed.
+
+CR3 activation remains disabled.
