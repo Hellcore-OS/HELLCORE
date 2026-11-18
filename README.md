@@ -85,4 +85,13 @@ Private repository: https://github.com/mju12162012-lab/HELLCORE
 
 ## License
 
-No open-source license has been declared. All rights reserved unless a license is added.
+**All Rights Reserved — No Open-Source License.**
+
+Copyright (c) 2026 HELLCORE OS Project.
+
+HELLCORE OS is proprietary software. No license, express or implied,
+is granted to use, reproduce, modify, publish, distribute, sublicense,
+or sell this project or any portion of its source code without prior
+written authorization from the copyright holder.
+
+See the [LICENSE](LICENSE) file for the full notice.
