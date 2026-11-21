@@ -58,6 +58,17 @@ jobs:
           run_test "CORE11.5 transactional rollback" \
             tests/core11_5_vmm_rollback
 
+      - name: Run scheduler regression suite
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p ci-results
+
+          {
+            echo "===== HELLCORE SCHEDULER REGRESSION ====="
+            make -C tests/scheduler test
+          } 2>&1 | tee ci-results/scheduler-regression.log
+
       - name: Upload regression results
         if: always()
         uses: actions/upload-artifact@v4
