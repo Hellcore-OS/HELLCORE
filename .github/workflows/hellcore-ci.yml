@@ -1,0 +1,67 @@
+name: HELLCORE CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core11-host-regression:
+    name: CORE11 Host Regression Tests
+    runs-on: monkci-ubuntu-24.04-4
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout HELLCORE
+        uses: actions/checkout@v4
+
+      - name: Prepare test environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-results
+          sudo apt-get update
+          sudo apt-get install -y clang make
+          clang --version | tee ci-results/toolchain.txt
+          make --version | head -n 1 | tee -a ci-results/toolchain.txt
+
+      - name: Run CORE11 regression suites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p ci-results
+
+          run_test() {
+            local name="$1"
+            local directory="$2"
+
+            {
+              echo "===== ${name} ====="
+              make -C "${directory}" test
+            } 2>&1 | tee -a ci-results/core11-regression.log
+          }
+
+          run_test "CORE11.1 USER permissions" \
+            tests/core11_1_vmm_user
+
+          run_test "CORE11.2 NX permissions" \
+            tests/core11_2_vmm_nx
+
+          run_test "CORE11.4 translation API" \
+            tests/core11_4_vmm_translate
+
+          run_test "CORE11.5 transactional rollback" \
+            tests/core11_5_vmm_rollback
+
+      - name: Upload regression results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hellcore-core11-regression-results
+          path: ci-results/
+          if-no-files-found: ignore
