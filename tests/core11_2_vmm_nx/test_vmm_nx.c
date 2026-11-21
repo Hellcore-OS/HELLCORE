@@ -161,6 +161,7 @@ int main(void)
     const uint64_t shared_user_va = shared_supervisor_va + 0x1000;
 
     uint64_t reported_flags = 0;
+    uint64_t translated = UINT64_MAX;
 
     /* Case 1: a new user mapping creates USER-enabled ancestors. */
     check(
@@ -346,14 +347,17 @@ int main(void)
 
     uint64_t giga_test_va = giga_va | giga_offset;
 
+    translated = UINT64_MAX;
     check(
-        hellcore_vmm_translate(giga_va) == giga_base,
+        hellcore_vmm_translate(giga_va, &translated) &&
+        translated == giga_base,
         "1 GiB translation returns physical base"
     );
 
+    translated = UINT64_MAX;
     check(
-        hellcore_vmm_translate(giga_test_va) ==
-            (giga_base | giga_offset),
+        hellcore_vmm_translate(giga_test_va, &translated) &&
+        translated == (giga_base | giga_offset),
         "1 GiB translation preserves 30-bit page offset"
     );
 
