@@ -1,3 +1,4 @@
+#include "../include/hellcore_boot_info.h"
 #include "uefi_abi.h"
 #include <stdint.h>
 
@@ -239,12 +240,14 @@ static int range_inside_kernel(uint64_t address, uint64_t size)
 EFI_STATUS hellcore_load_kernel_elf(
     EFI_HANDLE image,
     void *boot_services,
+    HELLCORE_BOOT_INFO *boot_info,
     uint64_t *entry_address)
 {
-    if (!entry_address)
+    if (!boot_info || !entry_address)
         return 2;
 
     *entry_address = 0;
+    boot_info->kernel_segment_count = 0;
 
     EFI_FILE_PROTOCOL *file = 0;
 
@@ -333,6 +336,8 @@ EFI_STATUS hellcore_load_kernel_elf(
 
     uint32_t load_count = 0;
     int entry_valid = 0;
+    HELLCORE_KERNEL_SEGMENT
+        loaded_segments[HELLCORE_BOOT_MAX_KERNEL_SEGMENTS] = {0};
 
     /*
      * Validate every loadable segment before modifying kernel memory.
@@ -348,6 +353,8 @@ EFI_STATUS hellcore_load_kernel_elf(
             ph->offset > file_size ||
             ph->filesz > file_size - ph->offset ||
             ph->paddr != ph->vaddr ||
+            (ph->vaddr & 0xFFFULL) ||
+            (ph->paddr & 0xFFFULL) ||
             ph->paddr > UINT64_MAX - ph->memsz ||
             !range_inside_kernel(ph->paddr, ph->memsz)) {
             serial_write("HELLCORE ELF: INVALID LOAD SEGMENT BOUNDS\r\n");
@@ -390,6 +397,17 @@ EFI_STATUS hellcore_load_kernel_elf(
             }
         }
 
+        if (load_count >= HELLCORE_BOOT_MAX_KERNEL_SEGMENTS) {
+            serial_write("HELLCORE ELF: TOO MANY LOAD SEGMENTS\r\n");
+            status = 2;
+            goto fail;
+        }
+
+        loaded_segments[load_count].virtual_address = ph->vaddr;
+        loaded_segments[load_count].physical_address = ph->paddr;
+        loaded_segments[load_count].memory_size = ph->memsz;
+        loaded_segments[load_count].flags = ph->flags;
+        loaded_segments[load_count].reserved = 0;
         ++load_count;
     }
 
@@ -428,6 +446,15 @@ EFI_STATUS hellcore_load_kernel_elf(
         for (uint64_t j = ph->filesz; j < ph->memsz; ++j)
             destination[j] = 0;
     }
+
+    /*
+     * Publish ABI v2 segment metadata after all segment copies
+     * and BSS initialization have succeeded.
+     */
+    for (uint32_t i = 0; i < load_count; ++i)
+        boot_info->kernel_segments[i] = loaded_segments[i];
+
+    boot_info->kernel_segment_count = load_count;
 
     *entry_address = header.entry;
 

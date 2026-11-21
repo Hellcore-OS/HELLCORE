@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "hellcore_boot_info.h"
 #include "pmm.h"
+#include "vmm.h"
 
 extern void hellcore_load_gdt(void);
 extern void hellcore_load_idt(void);
@@ -126,6 +127,23 @@ void kernel_main(const HELLCORE_BOOT_INFO *boot) {
     serial_write("HELLCORE PMM TEST PASSED: ALLOCATE AND FREE\r\n");
     serial_write("HELLCORE PMM TEST PASSED: DOUBLE FREE BLOCKED\r\n");
     serial_write("HELLCORE PMM TEST PASSED: KERNEL AND STACK PROTECTED\r\n");
+
+    serial_write("HELLCORE VMM: INITIALIZING\r\n");
+
+    if (!hellcore_vmm_init(boot)) {
+        serial_write("HELLCORE VMM: INITIALIZATION FAILED\r\n");
+        for (;;) {
+            __asm__ volatile ("cli; hlt");
+        }
+    }
+
+    serial_write("HELLCORE VMM: BOOT MEMORY MAPPED\r\n");
+    serial_write("HELLCORE VMM: ELF PERMISSIONS VERIFIED\r\n");
+#ifndef HELLCORE_VMM_HOST_TEST
+    serial_write("HELLCORE VMM: CR3 ACTIVATED\r\n");
+    serial_write("HELLCORE VMM: CR3 READBACK VERIFIED\r\n");
+#endif
+
     serial_write("HELLCORE KERNEL INITIALIZATION COMPLETE\r\n");
     serial_write("Created by DJ Lucifer\r\n");
 

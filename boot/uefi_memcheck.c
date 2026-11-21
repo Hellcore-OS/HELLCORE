@@ -220,7 +220,7 @@ static int guid_equal(const EFI_GUID *a, const EFI_GUID *b) {
 }
 
 EFI_STATUS hellcore_probe_kernel_file(EFI_HANDLE, void *);
-EFI_STATUS hellcore_load_kernel_elf(EFI_HANDLE, void *, uint64_t *);
+EFI_STATUS hellcore_load_kernel_elf(EFI_HANDLE, void *, HELLCORE_BOOT_INFO *, uint64_t *);
 __attribute__((noreturn)) void hellcore_enter_kernel(HELLCORE_BOOT_INFO *, uint64_t, uint64_t, uint64_t);
 
 EFI_STATUS HELLCORE_EFIAPI efi_main(
@@ -321,9 +321,13 @@ EFI_STATUS HELLCORE_EFIAPI efi_main(
     serial_hex(kernel_base);
     serial_write(" SIZE=0x10000\r\n");
 
+    g_boot_info.magic = HELLCORE_BOOT_MAGIC;
+    g_boot_info.version = HELLCORE_BOOT_VERSION;
+    g_boot_info.structure_size = sizeof(HELLCORE_BOOT_INFO);
+
     uint64_t kernel_entry = 0;
     EFI_STATUS load_status =
-        hellcore_load_kernel_elf(ImageHandle, bs, &kernel_entry);
+        hellcore_load_kernel_elf(ImageHandle, bs, &g_boot_info, &kernel_entry);
 
     if (load_status != EFI_SUCCESS) {
         serial_write("HELLCORE KERNEL ELF LOAD FAILED STATUS=");
@@ -467,9 +471,6 @@ EFI_STATUS HELLCORE_EFIAPI efi_main(
 
     inspect_kernel_memory((EFI_MEMORY_DESCRIPTOR *)map_buffer, map_size, descriptor_size);
 
-    g_boot_info.magic = HELLCORE_BOOT_MAGIC;
-    g_boot_info.version = HELLCORE_BOOT_VERSION;
-    g_boot_info.structure_size = sizeof(HELLCORE_BOOT_INFO);
 
     g_boot_info.memory_map_address =
         (uint64_t)(uintptr_t)map_buffer;
