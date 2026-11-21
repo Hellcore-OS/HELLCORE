@@ -4,7 +4,21 @@
 #include <stdint.h>
 
 #define HELLCORE_BOOT_MAGIC 0x48454C4C434F5245ULL
-#define HELLCORE_BOOT_VERSION 1
+#define HELLCORE_BOOT_VERSION 2
+
+#define HELLCORE_BOOT_MAX_KERNEL_SEGMENTS 16
+
+#define HELLCORE_ELF_PF_X 1U
+#define HELLCORE_ELF_PF_W 2U
+#define HELLCORE_ELF_PF_R 4U
+
+typedef struct {
+    uint64_t virtual_address;
+    uint64_t physical_address;
+    uint64_t memory_size;
+    uint32_t flags;
+    uint32_t reserved;
+} HELLCORE_KERNEL_SEGMENT;
 
 typedef struct {
     uint64_t magic;
@@ -30,6 +44,13 @@ typedef struct {
     uint64_t kernel_stack_size;
     uint64_t pmm_bitmap_address;
     uint64_t pmm_bitmap_size;
+
+    uint32_t kernel_segment_count;
+    uint32_t reserved1;
+
+    HELLCORE_KERNEL_SEGMENT
+        kernel_segments[HELLCORE_BOOT_MAX_KERNEL_SEGMENTS];
+
     uint64_t reserved[4];
 } HELLCORE_BOOT_INFO;
 

@@ -464,6 +464,72 @@ uint64_t hellcore_vmm_get_root(void) {
     return (uint64_t)(uintptr_t)root_table;
 }
 
+static int map_boot_memory(const HELLCORE_BOOT_INFO *boot);
+
+static int identity_range_is_mapped(uint64_t start, uint64_t size) {
+    if (!size || start >= ADDRESS_LIMIT ||
+        size > ADDRESS_LIMIT - start)
+        return 0;
+
+    uint64_t end = start + size;
+    uint64_t first_page = start & ~(PAGE_SIZE - 1);
+
+    if (end > UINT64_MAX - (PAGE_SIZE - 1))
+        return 0;
+
+    end = (end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+    if (end > ADDRESS_LIMIT)
+        return 0;
+
+    for (uint64_t address = first_page; address < end;
+         address += PAGE_SIZE) {
+        uint64_t physical = 0;
+
+        if (!hellcore_vmm_translate(address, &physical) ||
+            physical != address)
+            return 0;
+    }
+
+    return 1;
+}
+
+static int verify_identity_permissions(
+    uint64_t start,
+    uint64_t pages,
+    int expected_write,
+    int expected_nx
+) {
+    if (!pages || start >= ADDRESS_LIMIT ||
+        (start & (PAGE_SIZE - 1)) ||
+        pages > (ADDRESS_LIMIT - start) / PAGE_SIZE)
+        return 0;
+
+    for (uint64_t i = 0; i < pages; ++i) {
+        uint64_t address = start + i * PAGE_SIZE;
+        uint64_t physical = 0;
+        uint64_t flags = 0;
+
+        if (!hellcore_vmm_translate(address, &physical) ||
+            physical != address)
+            return 0;
+
+        if (!hellcore_vmm_get_flags(address, &flags))
+            return 0;
+
+        if (!(flags & HELLCORE_VMM_PAGE_PRESENT))
+            return 0;
+
+        if (!!(flags & HELLCORE_VMM_PAGE_WRITE) != !!expected_write)
+            return 0;
+
+        if (!!(flags & HELLCORE_VMM_PAGE_NX) != !!expected_nx)
+            return 0;
+    }
+
+    return 1;
+}
+
 int hellcore_vmm_init(const HELLCORE_BOOT_INFO *boot) {
     if (!boot ||
         boot->magic != HELLCORE_BOOT_MAGIC ||
@@ -476,6 +542,12 @@ int hellcore_vmm_init(const HELLCORE_BOOT_INFO *boot) {
         !boot->descriptor_size ||
         boot->descriptor_size < 40 ||
         boot->memory_map_size % boot->descriptor_size)
+        return 0;
+
+    if (!boot->kernel_stack_base || !boot->kernel_stack_size)
+        return 0;
+
+    if (!!boot->pmm_bitmap_address != !!boot->pmm_bitmap_size)
         return 0;
 
     if (cpu_uses_five_level_paging())
@@ -503,6 +575,154 @@ int hellcore_vmm_init(const HELLCORE_BOOT_INFO *boot) {
         return 0;
 
     root_table = (uint64_t *)(uintptr_t)new_root;
+
+    /*
+     * Map UEFI loader resources and conventional memory before
+     * changing CR3. The current implementation uses identity mapping.
+     */
+    if (!map_boot_memory(boot))
+        return 0;
+
+    /*
+     * Verify every boot resource that must remain accessible
+     * after the address-space switch.
+     */
+    if (!identity_range_is_mapped(
+            (uint64_t)(uintptr_t)boot,
+            sizeof(HELLCORE_BOOT_INFO)))
+        return 0;
+
+    if (!identity_range_is_mapped(
+            boot->memory_map_address,
+            boot->memory_map_size))
+        return 0;
+
+    if (!identity_range_is_mapped(
+            boot->kernel_stack_base,
+            boot->kernel_stack_size))
+        return 0;
+
+    if (boot->pmm_bitmap_address &&
+        !identity_range_is_mapped(
+            boot->pmm_bitmap_address,
+            boot->pmm_bitmap_size))
+        return 0;
+
+    /*
+     * Map kernel ELF segments using ABI v2 records from the UEFI loader.
+     * Validate all records before changing page tables.
+     */
+    if (!boot->kernel_segment_count ||
+        boot->kernel_segment_count > HELLCORE_BOOT_MAX_KERNEL_SEGMENTS)
+        return 0;
+
+    uint64_t segment_pages[HELLCORE_BOOT_MAX_KERNEL_SEGMENTS];
+
+    for (uint32_t i = 0; i < boot->kernel_segment_count; ++i) {
+        const HELLCORE_KERNEL_SEGMENT *seg =
+            &boot->kernel_segments[i];
+
+        if (!seg->memory_size ||
+            (seg->virtual_address & (PAGE_SIZE - 1)) ||
+            (seg->physical_address & (PAGE_SIZE - 1)) ||
+            !(seg->flags & HELLCORE_ELF_PF_R) ||
+            (seg->flags & ~(HELLCORE_ELF_PF_R |
+                            HELLCORE_ELF_PF_W |
+                            HELLCORE_ELF_PF_X)) ||
+            ((seg->flags & HELLCORE_ELF_PF_W) &&
+             (seg->flags & HELLCORE_ELF_PF_X)))
+            return 0;
+
+        if (seg->memory_size > UINT64_MAX - seg->virtual_address ||
+            seg->memory_size > UINT64_MAX - seg->physical_address)
+            return 0;
+
+        uint64_t pages =
+            seg->memory_size / PAGE_SIZE +
+            ((seg->memory_size % PAGE_SIZE) != 0);
+
+        if (!pages ||
+            seg->physical_address >= ADDRESS_LIMIT ||
+            pages > (ADDRESS_LIMIT - seg->physical_address) / PAGE_SIZE ||
+            pages > (UINT64_MAX - seg->virtual_address) / PAGE_SIZE)
+            return 0;
+
+        segment_pages[i] = pages;
+
+        uint64_t virtual_end =
+            seg->virtual_address + pages * PAGE_SIZE;
+        uint64_t physical_end =
+            seg->physical_address + pages * PAGE_SIZE;
+
+        for (uint32_t j = 0; j < i; ++j) {
+            const HELLCORE_KERNEL_SEGMENT *prev =
+                &boot->kernel_segments[j];
+
+            uint64_t prev_virtual_end =
+                prev->virtual_address + segment_pages[j] * PAGE_SIZE;
+            uint64_t prev_physical_end =
+                prev->physical_address + segment_pages[j] * PAGE_SIZE;
+
+            if ((seg->virtual_address < prev_virtual_end &&
+                 prev->virtual_address < virtual_end) ||
+                (seg->physical_address < prev_physical_end &&
+                 prev->physical_address < physical_end))
+                return 0;
+        }
+    }
+
+    /* Apply ELF permissions. All non-executable pages receive NX. */
+    for (uint32_t i = 0; i < boot->kernel_segment_count; ++i) {
+        const HELLCORE_KERNEL_SEGMENT *seg =
+            &boot->kernel_segments[i];
+
+        uint64_t map_flags = HELLCORE_VMM_MAP_READ;
+
+        if (seg->flags & HELLCORE_ELF_PF_W)
+            map_flags |= HELLCORE_VMM_MAP_WRITE;
+
+        if (seg->flags & HELLCORE_ELF_PF_X)
+            map_flags |= HELLCORE_VMM_MAP_EXECUTE;
+
+        for (uint64_t page = 0; page < segment_pages[i]; ++page) {
+            uint64_t va = seg->virtual_address + page * PAGE_SIZE;
+            uint64_t pa = seg->physical_address + page * PAGE_SIZE;
+
+            if (!hellcore_vmm_map_page(va, pa, map_flags))
+                return 0;
+        }
+    }
+
+    /* Verify every mapped page against its ABI record. */
+    for (uint32_t i = 0; i < boot->kernel_segment_count; ++i) {
+        const HELLCORE_KERNEL_SEGMENT *seg =
+            &boot->kernel_segments[i];
+
+        int expected_write = !!(seg->flags & HELLCORE_ELF_PF_W);
+        int expected_nx = !(seg->flags & HELLCORE_ELF_PF_X);
+
+        for (uint64_t page = 0; page < segment_pages[i]; ++page) {
+            uint64_t va = seg->virtual_address + page * PAGE_SIZE;
+            uint64_t expected_pa =
+                seg->physical_address + page * PAGE_SIZE;
+
+            uint64_t actual_pa = 0;
+            uint64_t flags = 0;
+
+            if (!hellcore_vmm_translate(va, &actual_pa) ||
+                actual_pa != expected_pa ||
+                !hellcore_vmm_get_flags(va, &flags) ||
+                !(flags & HELLCORE_VMM_PAGE_PRESENT) ||
+                (!!(flags & HELLCORE_VMM_PAGE_WRITE) != expected_write) ||
+                (!!(flags & HELLCORE_VMM_PAGE_NX) != expected_nx))
+                return 0;
+        }
+    }
+
+/*
+     * CR3 activation is deliberately deferred.
+     * This function only constructs and verifies the new page tables.
+     */
 
     return 1;
 }
