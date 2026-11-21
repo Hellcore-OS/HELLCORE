@@ -140,22 +140,39 @@ Clean individual test binaries only in their test directories.
 
 ## Continuous integration
 
-GitHub Actions and Monk CI integration are planned.
+HELLCORE uses GitHub Actions with a Monk CI runner for the
+CORE11 host-side regression pipeline.
 
-The intended CI pipeline will cover:
+Workflow: `.github/workflows/hellcore-ci.yml`
 
-1. Source and build-toolchain validation.
-2. Freestanding x86-64 compilation.
-3. ELF validation.
-4. Static analysis and compiler diagnostics.
-5. Host-side PMM/VMM regression tests.
-6. Test reports and build artifacts.
+The workflow runs on:
 
-CI success must not be presented as proof of UEFI boot,
-CR3 activation, or successful hardware operation.
+- Pull requests targeting `main`.
+- Pushes to `main`.
+- Manual `workflow_dispatch` requests.
 
-CI workflows must use verified build commands and must not
-silently substitute packaging success for kernel compilation.
+The job is configured with the `monkci-ubuntu-24.04-4`
+runner label and installs Clang and Make.
+
+The current pipeline executes four host-side regression suites:
+
+1. CORE11.1 — VMM USER permissions.
+2. CORE11.2 — VMM NX permissions.
+3. CORE11.4 — VMM translation API.
+4. CORE11.5 — VMM transactional rollback.
+
+Regression logs and toolchain version information are uploaded
+as the `hellcore-core11-regression-results` workflow artifact.
+A successful run of this pipeline has been reported.
+
+**Validation scope:** These are host-side regression tests.
+They do not establish a complete freestanding kernel build,
+ELF validation, UEFI boot success, CR3 activation, runtime
+paging on hardware, or successful hardware operation.
+
+CI success must not be presented as proof of behavior that
+the workflow does not test. Future build and boot validation
+must use verified, reproducible commands.
 
 ## Development roadmap
 
@@ -178,10 +195,9 @@ an earlier milestone.
 
 Public repository:
 
-https://github.com/mju12162012-lab/HELLCORE
+https://github.com/Hellcore-OS/HELLCORE
 
-The HELLCORE-OS GitHub Organization has been established.
-Repository ownership transfer is a separate pending operation.
+The repository is maintained under the HELLCORE-OS GitHub Organization.
 
 ## License
 
