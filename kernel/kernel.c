@@ -139,10 +139,8 @@ void kernel_main(const HELLCORE_BOOT_INFO *boot) {
 
     serial_write("HELLCORE VMM: BOOT MEMORY MAPPED\r\n");
     serial_write("HELLCORE VMM: ELF PERMISSIONS VERIFIED\r\n");
-#ifndef HELLCORE_VMM_HOST_TEST
-    serial_write("HELLCORE VMM: CR3 ACTIVATED\r\n");
-    serial_write("HELLCORE VMM: CR3 READBACK VERIFIED\r\n");
-#endif
+    serial_write("HELLCORE VMM: PAGE TABLES BUILT AND VERIFIED\r\n");
+    serial_write("HELLCORE VMM: CR3 ACTIVATION DEFERRED\r\n");
 
     serial_write("HELLCORE KERNEL INITIALIZATION COMPLETE\r\n");
     serial_write("Created by DJ Lucifer\r\n");
