@@ -23,6 +23,52 @@ Repository visibility: **Public**
 
 ## Current engineering status
 
+### CORE2.0 — Kernel and memory-management validation
+
+The CORE2.0 consolidated implementation campaign has a prepared
+acceptance package. The package recommends `ACCEPT WITH LIMITATIONS`;
+independent acceptance remains pending unless separately recorded.
+No independent acceptance decision is claimed here.
+
+These results describe an isolated tested development revision. They
+do not establish that the CORE2.0 implementation patch has been merged
+into public `main`. This documentation-only update does not apply that
+patch: its base does not match public `main`, and its source
+prerequisites are not all present there.
+
+| Validation area | Reported result |
+|---|---|
+| Host regression suites | 15 suites |
+| Host assertions | 1,894 `PASS:` assertions plus 63 `driver_phase1` assertions; 0 failures |
+| Build validation | 4 builds |
+| Checks per build | 107 passed, 0 failed |
+| QEMU PC/q35 | 15/15 milestones each; guest shutdown-request path and QEMU exit 0 |
+| Warm/cold restart | 10 repetitions each; timeout exit 124 with corrected verifier success |
+| Interrupted-init and recovery | Verification passed |
+| Preservation | 30 targets checked, 0 changed fields |
+
+The one-shot QEMU rerun observed the guest shutdown-request marker on
+PC and q35, but no `SHUTDOWN COMPLETE` marker was observed.
+
+Copied validation reports are in `docs/validation/core20-2026-11-23/`.
+The implementation campaign includes work on virtual-memory mapping
+and permission policy, page ownership and reverse-map tracking,
+transactional allocation/mapping/rollback, W^X and supervisor policy,
+cacheability and synthetic MMIO lifecycle tests, ACPI/MCFG discovery,
+controlled BSP exception delivery and an IRQ0 path, and restart and
+interrupted-initialization recovery.
+
+Explicit limitations remain in force:
+
+- CR3 activation is deferred; post-switch runtime translation, NMI,
+  TSS/IST, and recovery proof are incomplete.
+- SMP is disabled; single BSP only.
+- ECAM access is metadata-only; no ECAM dereference.
+- External interrupt routing is not established.
+- No physical-hardware validation; QEMU TCG only; `/dev/kvm` absent.
+- PC/q35 shutdown-request markers were observed; no shutdown-complete
+  marker was observed.
+
 ### CORE11 — Virtual memory management
 
 CORE11.1 through CORE11.5 have been implemented, host-tested,
