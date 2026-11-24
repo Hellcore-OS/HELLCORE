@@ -69,6 +69,51 @@ Explicit limitations remain in force:
 - PC/q35 shutdown-request markers were observed; no shutdown-complete
   marker was observed.
 
+### Isolated integrated software-stack evidence — 2026-11-24
+
+An isolated software-stack reproduction campaign dated 2026-11-24 produced
+the following evidence. This record is additive and documentation-only: it
+does not apply source patches, merge code into public `main`, change
+`LICENSE`, alter CI, or claim HELLCORE OS completion.
+
+| Check | Result |
+|---|---|
+| Host test suites | 9 |
+| Normal host assertions | 289 passed, 0 failed |
+| ASan/UBSan host assertions | 289 passed, 0 failed |
+| Stage-2 validation | 107 PASS / 0 FAIL per build |
+| Campaign seal | `sha256sum -c` 2,310 OK / 0 FAILED |
+
+Stage-2 artifacts were built from isolated source revision
+`a3858754bfc0bfa775f6288327dd4ff3da5142e4` (tree
+`956639cbab41d703941d982af7a8c86dcfcfcf2f`), not from canonical `HEAD`
+or public `main`. The 22 CORE2.x sources remain **UNINTEGRATED** in public
+`main`.
+
+Reproduced artifact SHA-256 values, matching the sealed campaign:
+
+| Artifact | SHA-256 |
+|---|---|
+| `hellcore.elf` | `908b2095c0004a92c61d501e1840318e38d32c9f200e566271a6d7940742e6cf` |
+| `hellcore.elf.map` | `78a368e5091a03a3de8159bef7723b0f5d5cc5c43182e4bdb1cb815bdcaf803b` |
+| `BOOTX64.EFI` | `686e4c91e75292a37741b1e768b6b6a88573b511841277c0519ca95eb2b4547e` |
+| `BOOTX64.EFI.map` | `27d226d64ec6d16fd95acb77508e40215528e457193d88ba28c49ba8d817d5d6` |
+| FAT32 ESP image | `c40b4cde4be9999ece4c1d32eae28a38fdf16e32b065ec634188084e39b01385` |
+| UEFI ISO image | `48bb89f59dd27aa0e8f6abfdea7e7f75abd1e37dc1d212971354ecc155446778` |
+| Stage-2 input manifest | `ed2798d2e09ba72c7b03cfcdc183310f8f37b7d654be90b937ddcd1ebdd45458` |
+
+Campaign seal verification values:
+
+| Item | SHA-256 |
+|---|---|
+| `CAMPAIGN-SHA256SUMS.txt` | `b6a52994d1df25322492e04c1288602ffd985a87d8a180695f805917b531eab4` |
+| `CAMPAIGN-SHA256SUMS.sha256` | `11fac401d612075dd6595aa409b14195f62353244cf9f4698b700379f93cc61a` |
+
+Graphical desktop boot acceptance remains pending. CR3 activation, SMP
+enablement, physical-hardware validation, and production readiness are
+deferred or unverified. This record claims no acceptance, promotion, boot,
+hardware, licensing, or OS-completion result.
+
 ### CORE11 — Virtual memory management
 
 CORE11.1 through CORE11.5 have been implemented, host-tested,
